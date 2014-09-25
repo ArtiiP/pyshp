@@ -214,6 +214,7 @@ class Reader:
         self.numRecords = None
         self.fields = []
         self.__dbfHdrLength = 0
+        self.__dbfRecLength = 0
         self.encoding = 'utf-8'
         
         if "encoding" in kwargs.keys():
@@ -434,8 +435,8 @@ class Reader:
             if not self.dbf:
                 raise ShapefileException("Shapefile Reader requires a shapefile or file-like object. (no dbf file found)")
             dbf = self.dbf
-            (self.numRecords, self.__dbfHdrLength) = \
-                    unpack("<xxxxLH22x", dbf.read(32))
+            (self.numRecords, self.__dbfHdrLength, self.__dbfRecLength) = \
+                    unpack("<xxxxLHH20x", dbf.read(32))
         return self.__dbfHdrLength
 
     def __dbfHeader(self):
@@ -468,13 +469,14 @@ class Reader:
             self.__dbfHeader()
         fmt = ''.join(['%ds' % fieldinfo[2] for fieldinfo in self.fields])
         fmtSize = calcsize(fmt)
-        return (fmt, fmtSize)
+        recSize = self.__dbfRecLength
+        return (fmt, fmtSize, recSize)
 
     def __record(self):
         """Reads and returns a dbf record row as a list of values."""
         f = self.__getFileObj(self.dbf)
         recFmt = self.__recordFmt()
-        recordContents = unpack(recFmt[0], f.read(recFmt[1]))
+        recordContents = unpack(recFmt[0], f.read(recFmt[2])[:recFmt[1]] ) # cut f.read to fmtSize
         if recordContents[0] != b(' '):
             # deleted record
             return None
@@ -515,7 +517,7 @@ class Reader:
         if not self.numRecords:
             self.__dbfHeader()
         i = self.__restrictIndex(i)
-        recSize = self.__recordFmt()[1]
+        recSize = self.__recordFmt()[2]
         f.seek(0)
         f.seek(self.__dbfHeaderLength() + (i * recSize))
         return self.__record()
