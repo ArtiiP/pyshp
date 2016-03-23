@@ -490,15 +490,12 @@ class Reader:
                 continue
             elif typ == "N":
                 value = value.replace(b('\0'), b('')).strip()
-                try:
-                    if value == b(''):
-                        value = 0
-                    elif deci:
-                        value = float(value)
-                    else:
-                        value = int(value)
-                except ValueError:
+                if value == b(''):
                     value = 0
+                elif deci:
+                    value = float(value)
+                else:
+                    value = int(value)
             elif typ == b('D'):
                 try:
                     y, m, d = int(value[:4]), int(value[4:6]), int(value[6:8])
