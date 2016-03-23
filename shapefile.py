@@ -2,12 +2,13 @@
 shapefile.py
 Provides read and write support for ESRI Shapefiles.
 author: jlawhead<at>geospatialpython.com
-date: 20130727
-version: 1.2.0
+date: 2015/06/22
+version: 1.2.3
 Compatible with Python versions 2.4-3.x
+version changelog: Reader.iterShapeRecords() bugfix for Python 3
 """
 
-__version__ = "1.2.0"
+__version__ = "1.2.3"
 
 from struct import pack, unpack, calcsize, error
 import os
@@ -15,6 +16,7 @@ import sys
 import time
 import array
 import tempfile
+import itertools
 
 #
 # Constants for shape types
@@ -37,6 +39,9 @@ PYTHON3 = sys.version_info[0] == 3
 
 if PYTHON3:
     xrange = range
+    izip = zip
+else:
+    from itertools import izip
 
 def b(v):
     if PYTHON3:
@@ -55,15 +60,24 @@ def b(v):
 
 def u(v):
     if PYTHON3:
-        if isinstance(v, bytes):
-            # For python 3 decode bytes to str.
-            return v.decode('utf-8')
-        elif isinstance(v, str):
-            # Already str.
-            return v
-        else:
-            # Error.
-            raise Exception('Unknown input type')
+        # try/catch added 2014/05/07
+        # returned error on dbf of shapefile
+        # from www.naturalearthdata.com named
+        # "ne_110m_admin_0_countries".
+        # Just returning v as is seemed to fix
+        # the problem.  This function could
+        # be condensed further.
+        try:
+          if isinstance(v, bytes):
+              # For python 3 decode bytes to str.
+              return v.decode('utf-8')
+          elif isinstance(v, str):
+              # Already str.
+              return v
+          else:
+              # Error.
+              raise Exception('Unknown input type')
+        except: return v
     else:
         # For python 2 assume str passed in and return str.
         return v
@@ -82,8 +96,7 @@ class _Array(array.array):
 
 def signed_area(coords):
     """Return the signed area enclosed by a ring using the linear time
-    algorithm at http://www.cgafaq.info/wiki/Polygon_Area. A value >= 0
-    indicates a counter-clockwise oriented ring.
+    algorithm. A value >= 0 indicates a counter-clockwise oriented ring.
     """
     xs, ys = map(list, zip(*coords))
     xs.append(xs[1])
@@ -453,7 +466,8 @@ class Reader:
             fieldDesc[1] = u(fieldDesc[1])
             self.fields.append(fieldDesc)
         terminator = dbf.read(1)
-        assert terminator == b("\r")
+        if terminator != b("\r"):
+            raise ShapefileException("Shapefile dbf header lacks expected terminator. (likely corrupt?)")
         self.fields.insert(0, ('DeletionFlag', 'C', 1, 0))
 
     def __recordFmt(self):
@@ -482,18 +496,30 @@ class Reader:
                 continue
             elif typ == "N":
                 value = value.replace(b('\0'), b('')).strip()
+                value = value.replace(b('*'), b(''))  # QGIS NULL is all '*' chars
                 if value == b(''):
-                    value = 0
+                    value = None
                 elif deci:
-                    value = float(value)
+                    try:
+                        value = float(value)
+                    except ValueError:
+                        #not parseable as float, set to None
+                        value = None
                 else:
-                    value = int(value)
+                    try:
+                        value = int(value)
+                    except ValueError:
+                        #not parseable as int, set to None
+                        value = None
             elif typ == b('D'):
-                try:
-                    y, m, d = int(value[:4]), int(value[4:6]), int(value[6:8])
-                    value = [y, m, d]
-                except:
-                    value = value.strip()
+                if value.count(b('0')) == len(value):  # QGIS NULL is all '0' chars
+                    value = None
+                else:
+                    try:
+                        y, m, d = int(value[:4]), int(value[4:6]), int(value[6:8])
+                        value = [y, m, d]
+                    except:
+                        value = value.strip()
             elif typ == b('L'):
                 value = (value in b('YyTt') and b('T')) or \
                                         (value in b('NnFf') and b('F')) or b('?')
@@ -551,6 +577,13 @@ class Reader:
         shapeRecords = []
         return [_ShapeRecord(shape=rec[0], record=rec[1]) \
                                 for rec in zip(self.shapes(), self.records())]
+
+    def iterShapeRecords(self):
+        """Returns a generator of combination geometry/attribute records for
+        all records in a shapefile."""
+        for shape, record in izip(self.iterShapes(), self.iterRecords()):
+            yield _ShapeRecord(shape=shape, record=record)
+
 
 class Writer:
     """Provides write support for ESRI Shapefiles."""
@@ -888,7 +921,10 @@ class Writer:
                     value = str(value)[0].upper()
                 else:
                     value = str(value)[:size].ljust(size)
-                assert len(value) == size
+                if len(value) != size:
+                    raise ShapefileException(
+                        "Shapefile Writer unable to pack incorrect sized value"
+                        " (size %d) into field '%s' (size %d)." % (len(value), fieldName, size))
                 value = b(value)
                 f.write(value)
 
